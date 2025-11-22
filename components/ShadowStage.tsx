@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import { GeminiLiveService } from '../services/geminiLive';
-import { AppState } from '../types';
+import { AppState, AppMode } from '../types';
 import { Loader2, Play, Square } from 'lucide-react';
 
 // Anatomy connections to create a "solid" hand for shadow casting
@@ -39,10 +39,12 @@ const getLandmarkRadius = (index: number): number => {
 };
 
 interface ShadowStageProps {
+  mode: AppMode;
   onStateChange: (state: AppState) => void;
+  onLandmarksDetected?: (landmarks: any[]) => void;
 }
 
-const ShadowStage: React.FC<ShadowStageProps> = ({ onStateChange }) => {
+const ShadowStage: React.FC<ShadowStageProps> = ({ mode, onStateChange, onLandmarksDetected }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(document.createElement('video'));
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
@@ -52,8 +54,8 @@ const ShadowStage: React.FC<ShadowStageProps> = ({ onStateChange }) => {
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const frameIntervalRef = useRef<number | null>(null);
   const requestRef = useRef<number | null>(null);
+  const frameIntervalRef = useRef<number | null>(null);
   
   const handMeshesRef = useRef<THREE.Group>(new THREE.Group());
 
@@ -73,6 +75,36 @@ const ShadowStage: React.FC<ShadowStageProps> = ({ onStateChange }) => {
   useEffect(() => {
     onStateChange(appState);
   }, [appState, onStateChange]);
+
+  // Handle Resize Logic explicitly for Split Screen vs Full Screen
+  useEffect(() => {
+    const handleResize = () => {
+        if (!rendererRef.current || !cameraRef.current || !canvasRef.current) return;
+        
+        // The parent container determines the size, not just window
+        const parent = canvasRef.current.parentElement;
+        if (parent) {
+            const width = parent.clientWidth;
+            const height = parent.clientHeight;
+            
+            cameraRef.current.aspect = width / height;
+            cameraRef.current.updateProjectionMatrix();
+            rendererRef.current.setSize(width, height);
+        }
+    };
+
+    window.addEventListener('resize', handleResize);
+    // Trigger once immediately to fit container
+    handleResize();
+    
+    // Also trigger on mode change as layout shifts
+    const timeout = setTimeout(handleResize, 100);
+
+    return () => {
+        window.removeEventListener('resize', handleResize);
+        clearTimeout(timeout);
+    };
+  }, [mode]);
 
   useEffect(() => {
     const init = async () => {
@@ -121,12 +153,12 @@ const ShadowStage: React.FC<ShadowStageProps> = ({ onStateChange }) => {
   const initThreeJS = () => {
     if (!canvasRef.current) return;
 
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+    // Initial sizing
+    const width = canvasRef.current.parentElement?.clientWidth || window.innerWidth;
+    const height = canvasRef.current.parentElement?.clientHeight || window.innerHeight;
 
     // Scene
     const scene = new THREE.Scene();
-    // Light Greyish background as requested (0xe0e0e0)
     scene.background = new THREE.Color(0xe0e0e0); 
     sceneRef.current = scene;
 
@@ -142,18 +174,16 @@ const ShadowStage: React.FC<ShadowStageProps> = ({ onStateChange }) => {
     });
     renderer.setSize(width, height);
     renderer.shadowMap.enabled = true;
-    // Use PCFShadowMap for sharper, harder edges than SoftShadowMap
     renderer.shadowMap.type = THREE.PCFShadowMap; 
     rendererRef.current = renderer;
 
     // --- The Setup ---
     
     // 1. The Wall (Receiver)
-    // Slightly off-white to look natural against the grey background
-    const wallGeometry = new THREE.PlaneGeometry(240, 135); // 16:9 Aspect
+    const wallGeometry = new THREE.PlaneGeometry(300, 200); 
     const wallMaterial = new THREE.MeshPhongMaterial({ 
-        color: 0xffffff, // Keep white for maximum shadow contrast
-        shininess: 0, // Matte
+        color: 0xffffff, 
+        shininess: 0,
     });
     const wall = new THREE.Mesh(wallGeometry, wallMaterial);
     wall.position.z = -20;
@@ -161,12 +191,10 @@ const ShadowStage: React.FC<ShadowStageProps> = ({ onStateChange }) => {
     scene.add(wall);
 
     // 2. The Light (Source)
-    // PointLight creates crisp shadows
     const light = new THREE.PointLight(0xffaa77, 130, 200);
     light.position.set(0, 15, 40);
     light.castShadow = true;
     
-    // High res shadow map
     light.shadow.mapSize.width = 4096;
     light.shadow.mapSize.height = 4096;
     light.shadow.bias = -0.0005;
@@ -175,18 +203,12 @@ const ShadowStage: React.FC<ShadowStageProps> = ({ onStateChange }) => {
     
     scene.add(light);
 
-    // Very dim ambient light to ensure shadows are deep black, not grey
+    // Ambient
     const ambientLight = new THREE.AmbientLight(0x101010); 
     scene.add(ambientLight);
 
     // 3. Hand Group
     scene.add(handMeshesRef.current);
-
-    window.addEventListener('resize', () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    });
 
     const animate = () => {
       renderFrame();
@@ -202,7 +224,16 @@ const ShadowStage: React.FC<ShadowStageProps> = ({ onStateChange }) => {
     
     if (videoRef.current.videoWidth > 0) {
         const results = handLandmarkerRef.current.detectForVideo(videoRef.current, now);
-        updateHandMeshes(results.landmarks);
+        
+        // Pass landmarks up for game logic
+        if (results.landmarks && results.landmarks.length > 0) {
+            if (onLandmarksDetected) {
+                onLandmarksDetected(results.landmarks[0]); // Just take the first hand for now
+            }
+            updateHandMeshes(results.landmarks);
+        } else {
+            handMeshesRef.current.clear();
+        }
     }
 
     rendererRef.current.render(sceneRef.current, cameraRef.current);
@@ -277,15 +308,13 @@ const ShadowStage: React.FC<ShadowStageProps> = ({ onStateChange }) => {
         );
         
         const sendFrame = async () => {
-          if (canvasRef.current) {
-            const base64 = canvasRef.current.toDataURL('image/jpeg', 0.6).split(',')[1];
-            geminiServiceRef.current?.sendVideoFrame(base64);
-          }
+            if (canvasRef.current) {
+              const base64 = canvasRef.current.toDataURL('image/jpeg', 0.6).split(',')[1];
+              geminiServiceRef.current?.sendVideoFrame(base64);
+            }
         };
         
-        // Send the first frame IMMEDIATELY to trigger the narrator
         await sendFrame();
-
         frameIntervalRef.current = window.setInterval(sendFrame, 1500);
         setAppState(AppState.RUNNING);
       } catch (e) {
@@ -300,10 +329,14 @@ const ShadowStage: React.FC<ShadowStageProps> = ({ onStateChange }) => {
     setAppState(AppState.READY);
   };
 
+  // If in Learn mode, we generally don't start the full AI narration automatically, 
+  // but we still render the shadow.
+  // The UI controls for "Start Show" are only for Live Mode.
+  
   return (
-    <div className="relative w-full h-screen bg-[#1a1a1a]">
+    <div className="relative w-full h-full bg-[#1a1a1a] overflow-hidden">
       {/* The 3D Canvas */}
-      <canvas ref={canvasRef} className="w-full h-full block" />
+      <canvas ref={canvasRef} className="w-full h-full block object-cover" />
 
       {/* Loading Overlay */}
       {appState === AppState.LOADING_MODEL && (
@@ -313,42 +346,46 @@ const ShadowStage: React.FC<ShadowStageProps> = ({ onStateChange }) => {
         </div>
       )}
 
-      {/* Controls Overlay */}
-      <div className="absolute bottom-8 left-0 right-0 flex justify-center items-center gap-6 z-40 pointer-events-none">
-        <div className="bg-black/60 backdrop-blur-md p-4 rounded-full border border-white/10 flex items-center gap-4 pointer-events-auto shadow-2xl">
-            
-          {appState === AppState.READY && (
-             <button 
-               onClick={startExperience}
-               className="flex items-center gap-2 px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-full font-bold transition-all transform hover:scale-105"
-             >
-               <Play className="w-5 h-5" /> Start Show
-             </button>
-          )}
+      {/* Controls Overlay - Only show in Live Show mode */}
+      {mode === AppMode.LIVE_SHOW && (
+        <div className="absolute bottom-8 left-0 right-0 flex justify-center items-center gap-6 z-40 pointer-events-none">
+            <div className="bg-black/60 backdrop-blur-md p-4 rounded-full border border-white/10 flex items-center gap-4 pointer-events-auto shadow-2xl">
+                
+            {appState === AppState.READY && (
+                <button 
+                onClick={startExperience}
+                className="flex items-center gap-2 px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-full font-bold transition-all transform hover:scale-105"
+                >
+                <Play className="w-5 h-5" /> Start Show
+                </button>
+            )}
 
-          {appState === AppState.RUNNING && (
-            <>
-              <button 
-                onClick={stopExperience}
-                className="flex items-center gap-2 px-6 py-3 bg-red-900/80 hover:bg-red-800 text-white rounded-full font-bold transition-all"
-              >
-                <Square className="w-5 h-5" /> End Show
-              </button>
-              <div className="h-8 w-px bg-white/20"></div>
-              <div className="flex items-center gap-3 px-2">
-                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                  <span className="text-white/80 text-sm font-medium">AI Narrator Listening</span>
-              </div>
-            </>
-          )}
+            {appState === AppState.RUNNING && (
+                <>
+                <button 
+                    onClick={stopExperience}
+                    className="flex items-center gap-2 px-6 py-3 bg-red-900/80 hover:bg-red-800 text-white rounded-full font-bold transition-all"
+                >
+                    <Square className="w-5 h-5" /> End Show
+                </button>
+                <div className="h-8 w-px bg-white/20"></div>
+                <div className="flex items-center gap-3 px-2">
+                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                    <span className="text-white/80 text-sm font-medium">AI Narrator Listening</span>
+                </div>
+                </>
+            )}
+            </div>
         </div>
-      </div>
+      )}
       
-      {/* Header / Branding */}
-      <div className="absolute top-6 left-6 z-40 pointer-events-none">
-          <h1 className="text-4xl font-cinzel text-gray-900 drop-shadow-sm">Lumina Theater</h1>
-          <p className="text-gray-700 text-sm font-lato tracking-widest mt-1 uppercase">Shadow Puppetry</p>
-      </div>
+      {/* Header / Branding - Only in Live Show */}
+      {mode === AppMode.LIVE_SHOW && (
+        <div className="absolute top-6 left-6 z-40 pointer-events-none">
+            <h1 className="text-4xl font-cinzel text-gray-900 drop-shadow-sm">Lumina Theater</h1>
+            <p className="text-gray-700 text-sm font-lato tracking-widest mt-1 uppercase">Shadow Puppetry</p>
+        </div>
+      )}
 
       {/* Error State */}
       {appState === AppState.ERROR && (

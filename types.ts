@@ -6,6 +6,11 @@ export enum AppState {
   ERROR = 'ERROR'
 }
 
+export enum AppMode {
+  LIVE_SHOW = 'LIVE_SHOW',
+  LEARN = 'LEARN'
+}
+
 export interface HandLandmark {
   x: number;
   y: number;
@@ -15,4 +20,13 @@ export interface HandLandmark {
 export interface GeminiLiveConfig {
   model: string;
   systemInstruction: string;
+}
+
+export interface TargetShadow {
+  id: string;
+  name: string;
+  icon: React.ElementType;
+  description: string;
+  hint: string;
+  difficulty: 'Easy' | 'Medium' | 'Hard';
 }
