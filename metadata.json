@@ -1,0 +1,8 @@
+{
+  "name": "Lumina Shadow Theater",
+  "description": "A 3D interactive shadow puppet theater powered by Gemini. Use your hands to cast shadows, and Gemini will narrate a story based on what it sees.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
